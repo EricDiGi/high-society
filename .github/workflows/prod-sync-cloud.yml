@@ -1,0 +1,77 @@
+name: Sync Versions to S3
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  push:
+    branches:
+      - production
+  pull_request:
+    branches:
+      - production
+
+jobs:
+  python_unit_testing:
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10, 3.11] # pandas not below 3.8
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Branch Name
+        run: |
+          echo "branch=$(echo ${GITHUB_REF##*/})" >> $GITHUB_OUTPUT
+        id: pushed_branch
+
+      - name: Checkout Pushed branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{steps.pushed_branch.outputs.branch}}
+      - name: Load master requirements
+        run: |
+          pip install -r master-requirements.txt
+      # Run Python Tests
+      - name: Python Unit Tests
+        run: |
+          dirlen=$(echo ls ./tests | wc -l)
+          if [ ${dirlen} -gt 0 ]; then python -m unittest discover ./tests; fi
+
+  sync-on-main:
+    runs-on: ubuntu-latest
+    needs: python_unit_testing
+    environment:
+      name: production
+    steps:
+      - name: Get Branch Name
+        run: |
+          echo "branch=$(echo ${GITHUB_REF##*/})" >> $GITHUB_OUTPUT
+        id: pushed_branch
+
+      - name: Checkout Pushed branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{steps.pushed_branch.outputs.branch}}
+      
+      - name: Get Changed Files
+        uses: jitterbit/get-changed-files@v1
+        with:
+          format: json
+        id: delta
+      
+      - name: Setup AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+        # ARN by stage
+          role-to-assume: ${{secrets.AWS_S3_ARN}}
+          role-duration-seconds: 900
+          aws-region: us-west-2
+        
+      - name: Setup Python
+        if: ${{success()}}
+        run: pip install -r master-requirements.txt
+
+      - name: Gantry Solve Versions and Build
+        if: ${{success()}}
+        run: |
+          python ./house-keeping/gantry.py ${{steps.delta.outputs.modified}}
